@@ -106,17 +106,30 @@ client.once("clientReady", async () => {
 
 client.on("interactionCreate", async (i) => {
   if (!i.isButton()) return;
+
+  // 1. Aplazamos la respuesta inmediatamente para que Discord no cierre la conexión
   await i.deferReply({ flags: [MessageFlags.Ephemeral] });
+
   try {
     if (i.customId === "iniciar") {
       cicloActivo = true;
-      await i.editReply("⚡ Ciclo iniciado.");
-      iniciarCicloTrivias();
+      // 2. Usamos editReply porque ya aplazamos la respuesta
+      await i.editReply("⚡ Ciclo iniciado. Generando pregunta...");
+
+      // 3. Ejecutamos la función sin esperar (sin await) para no bloquear la interacción
+      iniciarCicloTrivias().catch(err => {
+        console.error("Error en ciclo de trivia:", err);
+        i.followUp("❌ Hubo un error al generar la pregunta.");
+      });
+
     } else if (i.customId === "pausar") {
       cicloActivo = false;
       await i.editReply("⏸️ Ciclo pausado.");
     }
-  } catch (e) { await i.editReply("❌ Error."); }
+  } catch (e) { 
+    console.error(e);
+    await i.editReply("❌ Error al procesar la solicitud."); 
+  }
 });
 
 client.login(process.env["DISCORD_TOKEN"]);
