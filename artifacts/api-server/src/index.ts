@@ -101,23 +101,23 @@ async function iniciarCicloTrivias() {
 
     const response = await ai.models.generateContent({
       model: "gemini-2.5-flash",
-      contents: `Eres un experto evaluador del Preicfes. Utiliza el siguiente fragmento para formular una pregunta de opción múltiple de la materia "${materia}".
-      
-      [MATERIAL DE ESTUDIO]:
-      ${textoContexto || "Genera una pregunta estándar de esta materia."}
+      contents: `Eres un extractor experto de preguntas de examen. Tu única tarea es identificar una pregunta real de opción múltiple dentro del texto proporcionado y transcribirla.
 
-      Devuelve UN JSON estricto:
+      [TEXTO DEL DOCUMENTO DE DRIVE]:
+      ${textoContexto || "No hay texto suficiente."}
+
+      Instrucciones:
+      1. Extrae una pregunta real que aparezca en el documento. No analices el formato del archivo.
+      2. Si no hay preguntas, usa el texto para crear una pregunta de práctica tipo Preicfes.
+      3. Devuelve un JSON con: pregunta, opciones (A, B, C, D), índice correcto (0-3), justificación y descartes para las opciones erróneas.
+
+      Devuelve solo el JSON:
       {
-        "pregunta": "enunciado", 
-        "opciones": ["A) opción A", "B) opción B", "C) opción C", "D) opción D"], 
+        "pregunta": "...", 
+        "opciones": ["A) ...", "B) ...", "C) ...", "D) ..."], 
         "correcta": 0, 
-        "justificacion": "explicación de la correcta",
-        "descartes": {
-          "A": "explicación A",
-          "B": "explicación B",
-          "C": "explicación C",
-          "D": "explicación D"
-        }
+        "justificacion": "...",
+        "descartes": {"A": "...", "B": "...", "C": "...", "D": "..."}
       }`,
     });
 
@@ -173,15 +173,11 @@ async function iniciarCicloTrivias() {
 
 client.on("interactionCreate", async (interaction) => {
   if (!interaction.isButton()) return;
-
   if (interaction.customId === "activar_ciclo_bot") {
-    if (cicloActivo) {
-      return await interaction.reply({ content: "ℹ️ El ciclo ya está corriendo.", ephemeral: true });
-    }
-
+    if (cicloActivo) return await interaction.reply({ content: "ℹ️ El ciclo ya está corriendo.", ephemeral: true });
     try {
       cicloActivo = true;
-      await interaction.reply({ content: "⚡ ¡Conexión establecida con Drive! Iniciando simuladores automáticos de 30 minutos...", ephemeral: true });
+      await interaction.reply({ content: "⚡ ¡Conexión establecida con Drive! Iniciando simuladores automáticos...", ephemeral: true });
       iniciarCicloTrivias();
     } catch (error) {
       console.error(error);
