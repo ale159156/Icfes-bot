@@ -22,12 +22,18 @@ async function obtenerContenidoYGenerarPregunta() {
     const arch = archivos[Math.floor(Math.random() * archivos.length)];
     const resCont = await drive.files.get({ fileId: arch.id!, alt: "media" }, { responseType: "text" });
     const texto = resCont.data.trim();
-    if (texto.length < 500) return null;
+    if (texto.length < 50) return null;
 
     const prompt = `Eres experto ICFES. Crea UNA pregunta basada en: "${texto.substring(0, 3000)}". Devuelve SOLO JSON: {"pregunta": "...", "opciones": ["A) ...", "B) ...", "C) ...", "D) ..."], "correcta": 0, "justificacion": "...", "descartes": {"A": "...", "B": "...", "C": "...", "D": "..."}}`;
+
+    // Cambiamos a 'gemini-2.5-flash' que es el modelo activo y recomendado en 2026
     const response = await ai.models.generateContent({ model: "gemini-2.5-flash", contents: prompt });
     return JSON.parse(response.text.replace(/```json|```/g, "").trim());
-  } catch (e) { return null; }
+  } catch (e) { 
+    // Aquí es donde capturamos y mostramos el error real en los logs de Render
+    console.error("DEBUG: Error detallado de IA:", e);
+    return null; 
+  }
 }
 
 async function enviarJustificacion() {
