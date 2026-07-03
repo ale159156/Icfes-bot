@@ -16,55 +16,34 @@ let datosTriviaActual: any = null;
 async function obtenerContenidoYGenerarPregunta() {
   try {
     const folderId = process.env["DRIVE_FOLDER_ID"];
-    if (!folderId) {
-      console.error("DEBUG ERROR: DRIVE_FOLDER_ID no configurado.");
-      return null;
-    }
+    if (!folderId) return null;
 
-    async function listarArchivosRecursivos(idCarpeta: string): Promise<any[]> {
-      const res = await drive.files.list({
-        q: `'${idCarpeta}' in parents and trashed = false`,
-        fields: "files(id, name, mimeType)"
-      });
+    const res = await drive.files.list({
+      q: `'${folderId}' in parents and trashed = false`,
+      fields: "files(id, name, mimeType)"
+    });
 
-      let lista = res.data.files || [];
-      let archivosFinales: any[] = [];
-
-      for (const item of lista) {
-        if (item.mimeType === 'application/vnd.google-apps.folder') {
-          const subArchivos = await listarArchivosRecursivos(item.id!);
-          archivosFinales = archivosFinales.concat(subArchivos);
-        } else if (item.name?.endsWith('.txt') || item.name?.endsWith('.pdf')) {
-          archivosFinales.push(item);
-        }
-      }
-      return archivosFinales;
-    }
-
-    const archivos = await listarArchivosRecursivos(folderId);
-    if (archivos.length === 0) {
-      console.error("DEBUG ERROR: No se encontraron archivos (.txt o .pdf) en la carpeta.");
-      return null;
-    }
+    const archivos = (res.data.files || []).filter(f => f.name?.endsWith('.txt') || f.name?.endsWith('.pdf'));
+    if (archivos.length === 0) return null;
 
     const arch = archivos[Math.floor(Math.random() * archivos.length)];
     const resCont = await drive.files.get({ fileId: arch.id!, alt: "media" }, { responseType: "text" });
     const texto = resCont.data.trim();
 
-    const prompt = `Eres experto ICFES. Tu tarea es EXTRAER textualmente UNA pregunta de preparación ICFES que aparezca en el siguiente texto.
-    NO inventes preguntas.
-    DEBES copiar la pregunta, las opciones y la respuesta tal cual aparecen en el texto.
-    Texto a analizar: "${texto.substring(0, 5000)}"
-
-    Devuelve SOLO JSON estricto con este formato: 
-    {"pregunta": "...", "opciones": ["A) ...", "B) ...", "C) ...", "D) ..."], "correcta": 0, "justificacion": "...", "descartes": {"A": "...", "B": "...", "C": "...", "D": "..."}}`;
+    const prompt = `Eres experto ICFES. Extrae TEXTUALMENTE una pregunta de este texto: "${texto.substring(0, 5000)}".
+    Devuelve SOLO JSON con este formato: {"pregunta": "...", "opciones": ["A) ...", "B) ...", "C) ...", "D) ..."], "correcta": 0, "justificacion": "...", "descartes": {"A": "...", "B": "...", "C": "...", "D": "..."}}`;
 
     const response = await ai.models.generateContent({ model: "gemini-2.5-flash", contents: prompt });
 
-    const textoRespuesta = response.text.replace(/```json|```/g, "").trim();
-    return JSON.parse(textoRespuesta);
+    const responseText = response.text || "";
+    const startIndex = responseText.indexOf('{');
+    const endIndex = responseText.lastIndexOf('}');
+
+    if (startIndex === -1 || endIndex === -1) throw new Error("JSON no encontrado");
+
+    return JSON.parse(responseText.substring(startIndex, endIndex + 1));
   } catch (e) { 
-    console.error("DEBUG: Error detallado de IA durante extracción:", e);
+    console.error("DEBUG ERROR:", e);
     return null; 
   }
 }
