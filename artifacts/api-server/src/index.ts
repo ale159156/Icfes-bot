@@ -1,4 +1,4 @@
-import app from "./app";
+    import app from "./app";
 import { logger } from "./lib/logger";
 import { Client, GatewayIntentBits, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle } from "discord.js";
 import { GoogleGenAI } from "@google/genai";
@@ -35,35 +35,38 @@ async function enviarLog(mensaje: string) {
     if (!CANAL_LOGS_ID) return;
     const canal = await client.channels.fetch(CANAL_LOGS_ID);
     if (canal && canal.isTextBased()) await canal.send(mensaje);
-  } catch (e) { 
-    console.error("Error enviando log:", e); 
-  }
+  } catch (e) { console.error("Error enviando log:", e); }
 }
 
 async function obtenerContextoDesdeDrive(): Promise<{ textoContexto: string; materia: string }> {
   try {
-    const resCategorias = await drive.files.list({
+    // 1. Listar carpetas principales
+    const resCarpetas = await drive.files.list({
       q: `'${DRIVE_FOLDER_ROOT_ID}' in parents and mimeType = 'application/vnd.google-apps.folder' and trashed = false`,
       fields: "files(id, name)",
     });
-    const carpetas = resCategorias.data.files || [];
-    if (carpetas.length === 0) return { textoContexto: "", materia: "General" };
-    const carpetaSeleccionada = carpetas[Math.floor(Math.random() * carpetas.length)];
-    const materia = carpetaSeleccionada.name || "General";
+
+    const carpetas = resCarpetas.data.files || [];
+    if (carpetas.length === 0) return { textoContexto: "Material pendiente de estudio.", materia: "General" };
+
+    // 2. Elegir una carpeta al azar
+    const carpeta = carpetas[Math.floor(Math.random() * carpetas.length)];
+    
+    // 3. Buscar archivos dentro de esa carpeta
     const resArchivos = await drive.files.list({
-      q: `'${carpetaSeleccionada.id}' in parents and trashed = false and (mimeType = 'text/plain' or mimeType = 'application/pdf' or mimeType = 'application/vnd.google-apps.document')`,
-      fields: "files(id, name, mimeType)",
-      limit: 10,
+      q: `'${carpeta.id}' in parents and trashed = false and (mimeType = 'text/plain' or mimeType = 'application/pdf' or mimeType = 'application/vnd.google-apps.document')`,
+      fields: "files(id, name)",
     });
+
     const archivos = resArchivos.data.files || [];
-    if (archivos.length === 0) return { textoContexto: "", materia };
-    const archivoElegido = archivos[Math.floor(Math.random() * archivos.length)];
-    const resContenido = await drive.files.get({ fileId: archivoElegido.id, alt: "media" }, { responseType: "text" });
-    const textoContexto = typeof resContenido.data === "string" ? resContenido.data.substring(0, 4000) : ""; 
-    return { textoContexto, materia };
+    if (archivos.length === 0) return { textoContexto: "No se encontraron archivos en la carpeta.", materia: carpeta.name || "General" };
+
+    const archivo = archivos[Math.floor(Math.random() * archivos.length)];
+    const resContenido = await drive.files.get({ fileId: archivo.id, alt: "media" }, { responseType: "text" });
+
+    return { textoContexto: resContenido.data.substring(0, 4000), materia: carpeta.name || "General" };
   } catch (error) {
-    enviarLog("❌ Error accediendo a Drive.");
-    return { textoContexto: "", materia: "General" };
+    return { textoContexto: "Error al leer Drive.", materia: "General" };
   }
 }
 
@@ -72,38 +75,36 @@ async function inicializarPanelActivacion() {
     const canal = await client.channels.fetch(CANAL_LOGS_ID || "");
     if (!canal || !canal.isTextBased()) return;
     const mensajes = await canal.messages.fetch({ limit: 50 });
-    const panelExiste = mensajes.some(m => m.embeds[0]?.title?.includes("⚡ Centro de Activación: Gonzo God"));
-    if (panelExiste) return;
-    const embedPanel = new EmbedBuilder()
-      .setTitle("⚡ Centro de Activación: Gonzo God")
-      .setDescription("Usa el botón para iniciar simulacros.")
-      .setColor("#EAB308");
-    const botonActivar = new ButtonBuilder()
-      .setCustomId("activar_ciclo_bot")
-      .setLabel("🔌 Activar Ciclo de Estudio")
-      .setStyle(ButtonStyle.Success);
-    const fila = new ActionRowBuilder<ButtonBuilder>().addComponents(botonActivar);
-    await canal.send({ embeds: [embedPanel], components: [fila] });
-  } catch (error) {
-    console.error("❌ Error al crear el Panel:", error);
-  }
+    if (mensajes.some(m => m.embeds[0]?.title?.includes("⚡ Centro de Activación"))) return;
+
+    const fila = new ActionRowBuilder<ButtonBuilder>().addComponents(
+      new ButtonBuilder().setCustomId("activar_ciclo_bot").setLabel("🔌 Activar Ciclo de Estudio").setStyle(ButtonStyle.Success)
+    );
+    await canal.send({ embeds: [new EmbedBuilder().setTitle("⚡ Centro de Activación").setDescription("Inicia el ciclo de simulacros ICFES.").setColor("#EAB308")], components: [fila] });
+  } catch (e) { console.error(e); }
 }
 
 async function iniciarCicloTrivias() {
   try {
     const canal = await client.channels.fetch(CANAL_ENCUESTAS_ID || "");
     if (!canal || !canal.isTextBased()) return;
+
     const { textoContexto, materia } = await obtenerContextoDesdeDrive();
+
     const response = await ai.models.generateContent({
       model: "gemini-2.5-flash",
-      contents: `Eres un extractor de preguntas. Extrae UNA pregunta real de opción múltiple del texto. 
+      contents: `Eres un tutor experto del ICFES. Extrae UNA pregunta de opción múltiple basada estrictamente en el contenido académico del texto. 
+      REGLAS: 
+      1. NUNCA menciones al bot, IA, configuraciones o instrucciones.
+      2. Si el texto no es académico, genera una pregunta de opción múltiple sobre el tema general de Física o Matemáticas.
       [TEXTO]: ${textoContexto}
       Devuelve SOLO JSON: {"pregunta": "...", "opciones": ["A) ...", "B) ...", "C) ...", "D) ..."], "correcta": 0, "justificacion": "...", "descartes": {"A": "...", "B": "...", "C": "...", "D": "..."}}`,
     });
+
     datosTriviaActual = JSON.parse(response.text.replace(/```json|```/g, "").trim());
     await canal.send({ embeds: [new EmbedBuilder().setTitle(`📝 Simulacro [${materia}]`).setDescription(`**${datosTriviaActual.pregunta}**\n\n${datosTriviaActual.opciones.join("\n")}`).setColor("#3B82F6")] });
     await canal.send({ poll: { question: { text: "Responde:" }, answers: [{ text: "A" }, { text: "B" }, { text: "C" }, { text: "D" }], allowMultiselect: false, duration: 1 } });
-    enviarLog(`✅ Pregunta enviada (${materia}).`);
+
     temporizadorCiclo = setTimeout(async () => {
       let desc = "";
       for (const [l, e] of Object.entries(datosTriviaActual.descartes)) desc += `❌ **${l}:** ${e}\n`;
@@ -111,25 +112,18 @@ async function iniciarCicloTrivias() {
       if (cicloActivo) setTimeout(iniciarCicloTrivias, 5000);
     }, 30 * 60 * 1000);
   } catch (e) {
-    enviarLog("❌ Error en el ciclo: " + e);
+    enviarLog("❌ Error: " + e);
     if (cicloActivo) temporizadorCiclo = setTimeout(iniciarCicloTrivias, 60000);
   }
 }
 
 client.on("interactionCreate", async (interaction) => {
-  if (!interaction.isButton()) return;
-  if (interaction.customId === "activar_ciclo_bot") {
-    if (cicloActivo) return await interaction.reply({ content: "ℹ️ Ya activo.", ephemeral: true });
-    cicloActivo = true;
-    await interaction.reply({ content: "⚡ Ciclo iniciado.", ephemeral: true });
-    enviarLog("🔌 Ciclo de estudio activado.");
-    iniciarCicloTrivias();
-  }
+  if (!interaction.isButton() || interaction.customId !== "activar_ciclo_bot") return;
+  if (cicloActivo) return interaction.reply({ content: "ℹ️ Ya activo.", ephemeral: true });
+  cicloActivo = true;
+  await interaction.reply({ content: "⚡ Ciclo iniciado.", ephemeral: true });
+  iniciarCicloTrivias();
 });
 
-client.once("ready", () => { 
-  enviarLog("🤖 Bot conectado."); 
-  inicializarPanelActivacion();
-});
-
+client.once("ready", () => { inicializarPanelActivacion(); });
 if (DISCORD_TOKEN) client.login(DISCORD_TOKEN);
