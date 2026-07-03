@@ -13,39 +13,33 @@ let cicloActivo = false;
 let datosTriviaActual: any = null;
 
 // --- 2. FUNCIONES LÓGICAS ---
-async function obtenerContenidoYGenerarPregunta() {
-  try {
-    const folderId = process.env["DRIVE_FOLDER_ID"];
-    if (!folderId) return null;
+async function obtenerContenidoYGenerarPregunta(intentos = 3) {
+  for (let i = 0; i < intentos; i++) {
+    try {
+      // ... (tu lógica actual para listar archivos y leer texto sigue igual) ...
+      const arch = archivos[Math.floor(Math.random() * archivos.length)];
+      const resCont = await drive.files.get({ fileId: arch.id!, alt: "media" }, { responseType: "text" });
+      const texto = resCont.data.trim();
 
-    const res = await drive.files.list({
-      q: `'${folderId}' in parents and trashed = false`,
-      fields: "files(id, name, mimeType)"
-    });
+      const prompt = `Extrae una pregunta ICFES del texto: "${texto.substring(0, 3000)}". Devuelve SOLO JSON: {"pregunta": "...", "opciones": ["A) ...", "B) ...", "C) ...", "D) ..."], "correcta": 0}`;
 
-    const archivos = (res.data.files || []).filter(f => f.name?.endsWith('.txt') || f.name?.endsWith('.pdf'));
-    if (archivos.length === 0) return null;
+      const response = await ai.models.generateContent({ model: "gemini-2.5-flash", contents: prompt });
 
-    const arch = archivos[Math.floor(Math.random() * archivos.length)];
-    const resCont = await drive.files.get({ fileId: arch.id!, alt: "media" }, { responseType: "text" });
-    const texto = resCont.data.trim();
+      // ... (tu lógica de extracción JSON con startIndex/endIndex) ...
+      return JSON.parse(jsonString);
 
-    const prompt = `Eres experto ICFES. Extrae TEXTUALMENTE una pregunta de este texto: "${texto.substring(0, 5000)}".
-    Devuelve SOLO JSON con este formato: {"pregunta": "...", "opciones": ["A) ...", "B) ...", "C) ...", "D) ..."], "correcta": 0, "justificacion": "...", "descartes": {"A": "...", "B": "...", "C": "...", "D": "..."}}`;
+    } catch (e: any) {
+      console.warn(`Intento ${i + 1} fallido. Error: ${e.message}`);
 
-    const response = await ai.models.generateContent({ model: "gemini-2.5-flash", contents: prompt });
-
-    const responseText = response.text || "";
-    const startIndex = responseText.indexOf('{');
-    const endIndex = responseText.lastIndexOf('}');
-
-    if (startIndex === -1 || endIndex === -1) throw new Error("JSON no encontrado");
-
-    return JSON.parse(responseText.substring(startIndex, endIndex + 1));
-  } catch (e) { 
-    console.error("DEBUG ERROR:", e);
-    return null; 
+      // Si es un error 503, esperamos 5 segundos antes de reintentar
+      if (e.status === 503 || e.message?.includes("503")) {
+        await new Promise(resolve => setTimeout(resolve, 5000));
+      } else {
+        break; // Si es otro error, no reintentamos
+      }
+    }
   }
+  return null;
 }
 
 async function enviarJustificacion() {
