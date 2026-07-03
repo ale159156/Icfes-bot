@@ -59,13 +59,32 @@ async function enviarJustificacion() {
   if (cicloActivo) setTimeout(iniciarCicloTrivias, 120000);
 }
 
-// --- 4. INTERACCIONES ---
-client.on("interactionCreate", async (i) => {
-  if (!i.isButton()) return;
-  await i.deferReply({ flags: [MessageFlags.Ephemeral] });
-  if (i.customId === "iniciar") { cicloActivo = true; iniciarCicloTrivias(); await i.editReply("⚡ Ciclo iniciado."); }
-});
+// --- 4. EVENTOS (VERIFICACIÓN) ---
+client.once("clientReady", async () => {
+  logger.info("Bot conectado. Intentando enviar panel de botones...");
+  try {
+    const canal = await client.channels.fetch(process.env["CANAL_LOGS_ID"]!);
+    if (!canal) {
+      logger.error("No se pudo encontrar el canal con ID: " + process.env["CANAL_LOGS_ID"]);
+      return;
+    }
 
+    if (canal.isTextBased()) {
+      const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
+        new ButtonBuilder().setCustomId("iniciar").setLabel("Iniciar").setStyle(ButtonStyle.Success),
+        new ButtonBuilder().setCustomId("pausar").setLabel("Pausar").setStyle(ButtonStyle.Secondary)
+      );
+
+      await canal.send({ 
+        embeds: [new EmbedBuilder().setTitle("⚡ Centro de Activación").setDescription("Bot listo. Presiona un botón para comenzar.")], 
+        components: [row] 
+      });
+      logger.info("Panel de botones enviado exitosamente.");
+    }
+  } catch (err) {
+    logger.error({ err }, "Error al enviar botones al canal de logs");
+  }
+});
 client.login(process.env["DISCORD_TOKEN"]);
 
 // --- 5. ARRANQUE DEL SERVIDOR EXPRESS ---
