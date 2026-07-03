@@ -3,14 +3,12 @@ import { GoogleGenAI } from "@google/genai";
 import { google } from "googleapis";
 import http from "http";
 
-// 1. SERVIDOR WEB ROBUSTO PARA RENDER
-// La IP '0.0.0.0' es obligatoria para que Render detecte los puertos
+// --- PARTE 1: INFRAESTRUCTURA (Mantiene vivo el bot en Render) ---
 const server = http.createServer((req, res) => res.end("Bot de estudio activo"));
-const PORT = process.env.PORT || 3000;
-server.listen(PORT, '0.0.0.0', () => {
-    console.log(`Servidor HTTP activo en puerto ${PORT}`);
-});
+const PORT = process.env.PORT || 10000;
+server.listen(PORT, '0.0.0.0', () => console.log(`Servidor HTTP activo en puerto ${PORT}`));
 
+// --- PARTE 2: INICIALIZACIÓN ---
 const client = new Client({ intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent] });
 const ai = new GoogleGenAI({ apiKey: process.env["GEMINI_API_KEY"]! });
 const drive = google.drive({ version: "v3", auth: process.env["DRIVE_API_KEY"] });
@@ -18,45 +16,42 @@ const drive = google.drive({ version: "v3", auth: process.env["DRIVE_API_KEY"] }
 let cicloActivo = false;
 let datosTriviaActual: any = null;
 
-// 2. FUNCIÓN DE OBTENCIÓN (Filtro contra archivos basura)
-async function obtenerContenidoValido(): Promise<{ texto: string; materia: string }> {
+// --- PARTE 3: LÓGICA DE NEGOCIO (IA + DRIVE) ---
+async function obtenerContenidoYGenerarPregunta() {
   try {
     const res = await drive.files.list({ q: `'${process.env["DRIVE_FOLDER_ID"]}' in parents and trashed = false`, fields: "files(id, name)" });
     const archivos = (res.data.files || []).filter(f => f.name?.endsWith('.txt') || f.name?.endsWith('.pdf'));
-    if (archivos.length === 0) return { texto: "", materia: "" };
+    if (archivos.length === 0) return null;
 
     const arch = archivos[Math.floor(Math.random() * archivos.length)];
     const resCont = await drive.files.get({ fileId: arch.id!, alt: "media" }, { responseType: "text" });
     const texto = resCont.data.trim();
 
-    if (texto.length < 500 || texto.toLowerCase().includes("camscanner")) return { texto: "", materia: "" };
-    return { texto: texto.substring(0, 4000), materia: arch.name! };
-  } catch { return { texto: "", materia: "" }; }
-}
+    // Filtro de calidad (Integrado del código que funcionaba + mejoras de filtrado)
+    if (texto.length < 500 || texto.toLowerCase().includes("camscanner")) return null;
 
-// 3. CICLO DE PREGUNTAS
-async function iniciarCicloTrivias() {
-  if (!cicloActivo) return;
-
-  const { texto, materia } = await obtenerContenidoValido();
-  if (!texto) { setTimeout(iniciarCicloTrivias, 60000); return; }
-
-  try {
-    const response = await ai.models.generateContent({ 
-        model: "gemini-2.0-flash", 
-        contents: `Eres un tutor experto ICFES. Crea UNA pregunta de opción múltiple basada en este texto: ${texto}. Devuelve SOLO JSON: {"pregunta": "...", "opciones": ["A) ...", "B) ...", "C) ...", "D) ..."], "correcta": 0, "justificacion": "...", "descartes": {"A": "...", "B": "...", "C": "...", "D": "..."}}` 
+    const response = await ai.models.generateContent({
+      model: "gemini-2.0-flash",
+      contents: `Eres un tutor experto ICFES. Crea UNA pregunta de opción múltiple basada en: ${texto.substring(0, 4000)}. 
+      Responde SOLO JSON: {"pregunta": "...", "opciones": ["A) ...", "B) ...", "C) ...", "D) ..."], "correcta": 0, "justificacion": "...", "descartes": {"A": "...", "B": "...", "C": "...", "D": "..."}}`
     });
 
-    datosTriviaActual = JSON.parse(response.text.replace(/```json|```/g, "").trim());
-    const canal = await client.channels.fetch(process.env["CANAL_ID"]!);
+    return JSON.parse(response.text.replace(/```json|```/g, "").trim());
+  } catch (e) { console.error("Error en Tutor IA:", e); return null; }
+}
 
-    if (canal?.isTextBased()) {
-      await canal.send(`@everyone ¡Nueva pregunta de simulacro! [${materia}]`);
-      await canal.send({ embeds: [new EmbedBuilder().setTitle("📝 Simulacro ICFES").setDescription(`**${datosTriviaActual.pregunta}**\n\n${datosTriviaActual.opciones.join("\n")}`).setColor("#3B82F6")] });
-      await canal.send({ poll: { question: { text: "Responde:" }, answers: [{ text: "A" }, { text: "B" }, { text: "C" }, { text: "D" }], duration: 1 } });
-      setTimeout(enviarJustificacion, 1800000); // 30 min
-    }
-  } catch (e) { setTimeout(iniciarCicloTrivias, 60000); }
+async function iniciarCicloTrivias() {
+  if (!cicloActivo) return;
+  const trivia = await obtenerContenidoYGenerarPregunta();
+  if (!trivia) { setTimeout(iniciarCicloTrivias, 60000); return; }
+
+  datosTriviaActual = trivia;
+  const canal = await client.channels.fetch(process.env["CANAL_ID"]!);
+  if (canal?.isTextBased()) {
+    await canal.send({ embeds: [new EmbedBuilder().setTitle("📝 Simulacro ICFES").setDescription(`**${trivia.pregunta}**\n\n${trivia.opciones.join("\n")}`).setColor("#3B82F6")] });
+    await canal.send({ poll: { question: { text: "Responde:" }, answers: [{ text: "A" }, { text: "B" }, { text: "C" }, { text: "D" }], duration: 1 } });
+    setTimeout(enviarJustificacion, 1800000); // 30 min
+  }
 }
 
 async function enviarJustificacion() {
@@ -71,8 +66,8 @@ async function enviarJustificacion() {
   if (cicloActivo) setTimeout(iniciarCicloTrivias, 120000); 
 }
 
-// 4. EVENTOS Y PANEL
-client.once("ready", async () => {
+// --- PARTE 4: EVENTOS (Panel de control con limpieza) ---
+client.once("clientReady", async () => {
   const canal = await client.channels.fetch(process.env["CANAL_LOGS_ID"]!);
   if (canal?.isTextBased()) {
     const msgs = await canal.messages.fetch({ limit: 5 });
@@ -80,19 +75,17 @@ client.once("ready", async () => {
 
     const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
       new ButtonBuilder().setCustomId("iniciar").setLabel("Iniciar").setStyle(ButtonStyle.Success),
-      new ButtonBuilder().setCustomId("pausar").setLabel("Pausar").setStyle(ButtonStyle.Secondary),
-      new ButtonBuilder().setCustomId("saltar").setLabel("Saltar").setStyle(ButtonStyle.Danger)
+      new ButtonBuilder().setCustomId("pausar").setLabel("Pausar").setStyle(ButtonStyle.Secondary)
     );
-    await canal.send({ embeds: [new EmbedBuilder().setTitle("⚡ Centro de Activación").setDescription("Controles listos.")], components: [row] });
+    await canal.send({ embeds: [new EmbedBuilder().setTitle("⚡ Centro de Activación")], components: [row] });
   }
 });
 
 client.on("interactionCreate", async (i) => {
   if (!i.isButton()) return;
-  await i.reply({ content: "Procesando...", flags: [MessageFlags.Ephemeral] });
+  await i.deferReply({ flags: [MessageFlags.Ephemeral] });
   if (i.customId === "iniciar") { cicloActivo = true; iniciarCicloTrivias(); await i.editReply("⚡ Ciclo iniciado."); }
   else if (i.customId === "pausar") { cicloActivo = false; await i.editReply("⏸️ Ciclo pausado."); }
-  else if (i.customId === "saltar") { enviarJustificacion(); await i.editReply("⏭️ Saltando..."); }
 });
 
 client.login(process.env["DISCORD_TOKEN"]);
