@@ -42,16 +42,33 @@ async function enviarJustificacion() {
 }
 
 async function iniciarCicloTrivias() {
-  if (!cicloActivo) return;
+  console.log("DEBUG: Iniciando ciclo de trivia..."); // <--- ESTO SALDRÁ EN RENDER
+
+  if (!cicloActivo) {
+    console.log("DEBUG: Ciclo detenido, cancelando...");
+    return;
+  }
+
   const trivia = await obtenerContenidoYGenerarPregunta();
-  if (!trivia) { setTimeout(iniciarCicloTrivias, 60000); return; }
+  if (!trivia) {
+    console.log("DEBUG: Error al generar trivia con IA.");
+    setTimeout(iniciarCicloTrivias, 60000); 
+    return;
+  }
+
+  console.log("DEBUG: Trivia generada. Buscando canal ID:", process.env["CANAL_ID"]);
 
   datosTriviaActual = trivia;
   const canal = await client.channels.fetch(process.env["CANAL_ID"]!);
+
   if (canal?.isTextBased()) {
+    console.log("DEBUG: Canal encontrado, enviando mensaje...");
     await canal.send({ embeds: [new EmbedBuilder().setTitle("📝 Simulacro ICFES").setDescription(`**${trivia.pregunta}**\n\n${trivia.opciones.join("\n")}`).setColor("#3B82F6")] });
     await canal.send({ poll: { question: { text: "Responde:" }, answers: [{ text: "A" }, { text: "B" }, { text: "C" }, { text: "D" }], duration: 1 } });
     setTimeout(enviarJustificacion, 1800000);
+    console.log("DEBUG: Mensaje enviado con éxito.");
+  } else {
+    console.log("DEBUG: ERROR CRÍTICO: No se pudo enviar mensaje. ¿Tiene el bot permiso para escribir en ese canal?");
   }
 }
 
