@@ -1,10 +1,10 @@
 import app from "./app";
 import { logger } from "./lib/logger";
-import { Client, GatewayIntentBits, EmbedBuilder, ButtonStyle, ActionRowBuilder, ButtonBuilder, MessageFlags } from "discord.js";
+import { Client, GatewayIntentBits, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, MessageFlags } from "discord.js";
 import { GoogleGenAI } from "@google/genai";
 import { google } from "googleapis";
 
-// --- 1. INICIALIZACIÓN DEL BOT ---
+// --- 1. CONFIGURACIÓN ---
 const client = new Client({ intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent] });
 const ai = new GoogleGenAI({ apiKey: process.env["GEMINI_API_KEY"]! });
 const drive = google.drive({ version: "v3", auth: process.env["DRIVE_API_KEY"] });
@@ -12,7 +12,7 @@ const drive = google.drive({ version: "v3", auth: process.env["DRIVE_API_KEY"] }
 let cicloActivo = false;
 let datosTriviaActual: any = null;
 
-// --- 2. LÓGICA DE IA (Prompt Maestro) ---
+// --- 2. FUNCIONES LÓGICAS ---
 async function obtenerContenidoYGenerarPregunta() {
   try {
     const res = await drive.files.list({ q: `'${process.env["DRIVE_FOLDER_ID"]}' in parents and trashed = false`, fields: "files(id, name)" });
@@ -22,30 +22,12 @@ async function obtenerContenidoYGenerarPregunta() {
     const arch = archivos[Math.floor(Math.random() * archivos.length)];
     const resCont = await drive.files.get({ fileId: arch.id!, alt: "media" }, { responseType: "text" });
     const texto = resCont.data.trim();
-
     if (texto.length < 500) return null;
 
-    const prompt = `Eres experto ICFES. Crea UNA pregunta de selección múltiple basada en: "${texto.substring(0, 3000)}".
-    Devuelve SOLO JSON: {"pregunta": "...", "opciones": ["A) ...", "B) ...", "C) ...", "D) ..."], "correcta": 0, "justificacion": "...", "descartes": {"A": "...", "B": "...", "C": "...", "D": "..."}}`;
-
+    const prompt = `Eres experto ICFES. Crea UNA pregunta basada en: "${texto.substring(0, 3000)}". Devuelve SOLO JSON: {"pregunta": "...", "opciones": ["A) ...", "B) ...", "C) ...", "D) ..."], "correcta": 0, "justificacion": "...", "descartes": {"A": "...", "B": "...", "C": "...", "D": "..."}}`;
     const response = await ai.models.generateContent({ model: "gemini-2.0-flash", contents: prompt });
     return JSON.parse(response.text.replace(/```json|```/g, "").trim());
   } catch (e) { return null; }
-}
-
-// --- 3. CICLO DE PREGUNTAS Y AUTO-JUSTIFICACIÓN ---
-async function iniciarCicloTrivias() {
-  if (!cicloActivo) return;
-  const trivia = await obtenerContenidoYGenerarPregunta();
-  if (!trivia) { setTimeout(iniciarCicloTrivias, 60000); return; }
-
-  datosTriviaActual = trivia;
-  const canal = await client.channels.fetch(process.env["CANAL_ID"]!);
-  if (canal?.isTextBased()) {
-    await canal.send({ embeds: [new EmbedBuilder().setTitle("📝 Simulacro ICFES").setDescription(`**${trivia.pregunta}**\n\n${trivia.opciones.join("\n")}`).setColor("#3B82F6")] });
-    await canal.send({ poll: { question: { text: "Responde:" }, answers: [{ text: "A" }, { text: "B" }, { text: "C" }, { text: "D" }], duration: 1 } });
-    setTimeout(enviarJustificacion, 1800000); // 30 min
-  }
 }
 
 async function enviarJustificacion() {
@@ -59,44 +41,50 @@ async function enviarJustificacion() {
   if (cicloActivo) setTimeout(iniciarCicloTrivias, 120000);
 }
 
-// --- 4. INTERACCIONES (Coloca este bloque en tu index.ts) ---
+async function iniciarCicloTrivias() {
+  if (!cicloActivo) return;
+  const trivia = await obtenerContenidoYGenerarPregunta();
+  if (!trivia) { setTimeout(iniciarCicloTrivias, 60000); return; }
+
+  datosTriviaActual = trivia;
+  const canal = await client.channels.fetch(process.env["CANAL_ID"]!);
+  if (canal?.isTextBased()) {
+    await canal.send({ embeds: [new EmbedBuilder().setTitle("📝 Simulacro ICFES").setDescription(`**${trivia.pregunta}**\n\n${trivia.opciones.join("\n")}`).setColor("#3B82F6")] });
+    await canal.send({ poll: { question: { text: "Responde:" }, answers: [{ text: "A" }, { text: "B" }, { text: "C" }, { text: "D" }], duration: 1 } });
+    setTimeout(enviarJustificacion, 1800000);
+  }
+}
+
+// --- 3. EVENTOS ---
+client.once("clientReady", async () => {
+  logger.info("Bot conectado.");
+  const canal = await client.channels.fetch(process.env["CANAL_LOGS_ID"]!);
+  if (canal?.isTextBased()) {
+    const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
+      new ButtonBuilder().setCustomId("iniciar").setLabel("Iniciar").setStyle(ButtonStyle.Success),
+      new ButtonBuilder().setCustomId("pausar").setLabel("Pausar").setStyle(ButtonStyle.Secondary)
+    );
+    await canal.send({ embeds: [new EmbedBuilder().setTitle("⚡ Centro de Activación")], components: [row] });
+  }
+});
+
 client.on("interactionCreate", async (i) => {
-  // Solo procesamos botones
   if (!i.isButton()) return;
-
-  // 1. AVISAMOS A DISCORD QUE ESTAMOS TRABAJANDO (Evita el fallo de 3 segundos)
   await i.deferReply({ flags: [MessageFlags.Ephemeral] });
-
   try {
     if (i.customId === "iniciar") {
       cicloActivo = true;
-      // 2. Editamos la respuesta para confirmar al usuario
-      await i.editReply("⚡ Ciclo iniciado. Generando pregunta...");
-
-      // 3. Lanzamos la trivia
-      await iniciarCicloTrivias(); 
-    } 
-    else if (i.customId === "pausar") {
+      await i.editReply("⚡ Ciclo iniciado.");
+      iniciarCicloTrivias();
+    } else if (i.customId === "pausar") {
       cicloActivo = false;
       await i.editReply("⏸️ Ciclo pausado.");
     }
-  } catch (error) {
-    logger.error({ error }, "Error al procesar botón");
-    await i.editReply("❌ Hubo un error al procesar tu solicitud.");
-  });
-
-      await canal.send({ 
-        embeds: [new EmbedBuilder().setTitle("⚡ Centro de Activación").setDescription("Bot listo. Presiona un botón para comenzar.")], 
-        components: [row] 
-      });
-      logger.info("Panel de botones enviado exitosamente.");
-    }
-  } catch (err) {
-    logger.error({ err }, "Error al enviar botones al canal de logs");
-  }
+  } catch (e) { await i.editReply("❌ Error."); }
 });
+
 client.login(process.env["DISCORD_TOKEN"]);
 
-// --- 5. ARRANQUE DEL SERVIDOR EXPRESS ---
+// --- 4. EXPRESS ---
 const port = Number(process.env["PORT"] || 10000);
-app.listen(port, () => logger.info({ port }, "Servidor Express y Bot de Discord activos"));
+app.listen(port, () => logger.info({ port }, "Servidor y Bot activos"));
