@@ -25,7 +25,7 @@ async function obtenerContenidoYGenerarPregunta() {
     if (texto.length < 500) return null;
 
     const prompt = `Eres experto ICFES. Crea UNA pregunta basada en: "${texto.substring(0, 3000)}". Devuelve SOLO JSON: {"pregunta": "...", "opciones": ["A) ...", "B) ...", "C) ...", "D) ..."], "correcta": 0, "justificacion": "...", "descartes": {"A": "...", "B": "...", "C": "...", "D": "..."}}`;
-    const response = await ai.models.generateContent({ model: "gemini-2.0-flash", contents: prompt });
+    const response = await ai.models.generateContent({ model: "gemini-2.5-flash", contents: prompt });
     return JSON.parse(response.text.replace(/```json|```/g, "").trim());
   } catch (e) { return null; }
 }
