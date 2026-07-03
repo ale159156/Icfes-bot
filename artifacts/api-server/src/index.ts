@@ -3,6 +3,7 @@ import { GoogleGenAI } from "@google/genai";
 import { google } from "googleapis";
 import http from "http";
 
+// 1. Servidor para mantener vivo el puerto en Render
 const server = http.createServer((req, res) => res.end("Bot activo"));
 server.listen(process.env.PORT || 3000);
 
@@ -13,54 +14,85 @@ const drive = google.drive({ version: "v3", auth: process.env["DRIVE_API_KEY"] }
 let cicloActivo = false;
 let datosTriviaActual: any = null;
 
-// --- FUNCIÓN DE LIMPIEZA Y REINICIO DE PANEL ---
-async function inicializarPanel() {
-  const canal = await client.channels.fetch(process.env["CANAL_LOGS_ID"]!);
-  if (!canal || !canal.isTextBased()) return;
+// 2. PROMPT DE TUTOR ICFES (Estricto)
+const PROMPT_TUTOR = `Eres un tutor experto ICFES. Extrae UNA pregunta de opción múltiple del texto.
+REGLAS:
+1. Si el texto es técnico (metadatos, errores, sistema), descártalo.
+2. Genera el enunciado completo con su contexto.
+3. Devuelve SOLO JSON: {"pregunta": "...", "opciones": ["A) ...", "B) ...", "C) ...", "D) ..."], "correcta": 0, "justificacion": "...", "descartes": {"A": "...", "B": "...", "C": "...", "D": "..."}}`;
 
-  // 1. Borrar mensajes previos del panel para evitar botones muertos
-  const mensajes = await canal.messages.fetch({ limit: 10 });
-  const mensajesPanel = mensajes.filter(m => m.embeds[0]?.title === "⚡ Centro de Activación");
-  for (const msg of mensajesPanel.values()) await msg.delete().catch(() => {});
+// 3. Obtención con filtro de calidad
+async function obtenerContenidoValido(): Promise<{ texto: string; materia: string }> {
+  try {
+    const res = await drive.files.list({ q: `'${process.env["DRIVE_FOLDER_ID"]}' in parents and trashed = false`, fields: "files(id, name)" });
+    const archivos = (res.data.files || []).filter(f => f.name?.endsWith('.txt') || f.name?.endsWith('.pdf'));
+    if (archivos.length === 0) return { texto: "", materia: "" };
 
-  // 2. Crear panel nuevo
-  const fila = new ActionRowBuilder<ButtonBuilder>().addComponents(
-    new ButtonBuilder().setCustomId("iniciar").setLabel("🔌 Iniciar").setStyle(ButtonStyle.Success),
-    new ButtonBuilder().setCustomId("pausar").setLabel("⏸️ Pausar").setStyle(ButtonStyle.Secondary),
-    new ButtonBuilder().setCustomId("saltar").setLabel("⏭️ Saltar").setStyle(ButtonStyle.Danger)
-  );
+    const arch = archivos[Math.floor(Math.random() * archivos.length)];
+    const resCont = await drive.files.get({ fileId: arch.id!, alt: "media" }, { responseType: "text" });
+    const texto = resCont.data.trim();
 
-  await canal.send({
-    embeds: [new EmbedBuilder().setTitle("⚡ Centro de Activación").setDescription("Controles remotos para simulacros ICFES.").setColor("#EAB308")],
-    components: [fila]
-  });
+    // Filtro para evitar errores de lectura o documentos vacíos
+    if (texto.length < 500 || texto.toLowerCase().includes("camscanner")) return { texto: "", materia: "" };
+    return { texto: texto.substring(0, 4000), materia: arch.name! };
+  } catch { return { texto: "", materia: "" }; }
 }
 
-// ... (Resto de tus funciones: obtenerContenidoValido, enviarJustificacion, iniciarCicloTrivias) ...
+// 4. Justificación con formato exacto
+async function enviarJustificacion() {
+  if (!datosTriviaActual) return;
+  const canal = await client.channels.fetch(process.env["CANAL_ID"]!);
+  if (canal?.isTextBased()) {
+    let desc = "";
+    ["A", "B", "C", "D"].forEach((l, i) => {
+      if (i !== datosTriviaActual.correcta) desc += `❌ **${l}:** ${datosTriviaActual.descartes[l]}\n`;
+    });
+    await canal.send({ embeds: [new EmbedBuilder().setTitle("✅ Justificación").setDescription(`Correcta: **${datosTriviaActual.opciones[datosTriviaActual.correcta]}**\n\n🟢 **Justificación:**\n${datosTriviaActual.justificacion}\n\n🔍 **Descartes:**\n${desc}`).setColor("#10B981")] });
+  }
+  datosTriviaActual = null;
+  if (cicloActivo) setTimeout(iniciarCicloTrivias, 120000); 
+}
 
-// --- EVENTO READY ---
-client.once("ready", () => {
-  console.log("Bot listo. Limpiando panel antiguo...");
-  inicializarPanel();
+// 5. Ciclo principal
+async function iniciarCicloTrivias() {
+  const { texto, materia } = await obtenerContenidoValido();
+  if (!texto) { setTimeout(iniciarCicloTrivias, 10000); return; }
+
+  const response = await ai.models.generateContent({ model: "gemini-2.5-flash", contents: `${PROMPT_TUTOR}\n\nTEXTO BASE:\n${texto}` });
+  try {
+    datosTriviaActual = JSON.parse(response.text.replace(/```json|```/g, "").trim());
+    const canal = await client.channels.fetch(process.env["CANAL_ID"]!);
+    if (canal?.isTextBased()) {
+      await canal.send(`@everyone ¡Nueva pregunta de simulacro! [${materia}]`);
+      await canal.send({ embeds: [new EmbedBuilder().setTitle("📝 Simulacro ICFES").setDescription(`**${datosTriviaActual.pregunta}**\n\n${datosTriviaActual.opciones.join("\n")}`).setColor("#3B82F6")] });
+      await canal.send({ poll: { question: { text: "Responde:" }, answers: [{ text: "A" }, { text: "B" }, { text: "C" }, { text: "D" }], duration: 1 } });
+      setTimeout(enviarJustificacion, 1800000);
+    }
+  } catch { setTimeout(iniciarCicloTrivias, 60000); }
+}
+
+// 6. Eventos y Panel Limpiador
+client.once("ready", async () => {
+  const canal = await client.channels.fetch(process.env["CANAL_LOGS_ID"]!);
+  if (canal?.isTextBased()) {
+    const msgs = await canal.messages.fetch({ limit: 5 });
+    for (const msg of msgs.values()) if (msg.author.id === client.user?.id) await msg.delete().catch(() => {});
+
+    const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
+      new ButtonBuilder().setCustomId("iniciar").setLabel("Iniciar").setStyle(ButtonStyle.Success),
+      new ButtonBuilder().setCustomId("pausar").setLabel("Pausar").setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder().setCustomId("saltar").setLabel("Saltar").setStyle(ButtonStyle.Danger)
+    );
+    await canal.send({ embeds: [new EmbedBuilder().setTitle("⚡ Centro de Activación").setDescription("Control remoto")], components: [row] });
+  }
 });
 
-// --- EVENTO INTERACCIÓN (Botones) ---
 client.on("interactionCreate", async (i) => {
   if (!i.isButton()) return;
-
-  if (i.customId === "iniciar") {
-    if (cicloActivo) return i.reply({ content: "ℹ️ Ya está activo.", ephemeral: true });
-    cicloActivo = true;
-    iniciarCicloTrivias();
-    await i.reply({ content: "⚡ Ciclo iniciado.", ephemeral: true });
-  } else if (i.customId === "pausar") {
-    cicloActivo = false;
-    await i.reply({ content: "⏸️ Ciclo pausado.", ephemeral: true });
-  } else if (i.customId === "saltar") {
-    if (!datosTriviaActual) return i.reply({ content: "⚠️ No hay pregunta activa.", ephemeral: true });
-    enviarJustificacion();
-    await i.reply({ content: "⏭️ Saltando...", ephemeral: true });
-  }
+  await i.deferReply({ ephemeral: true });
+  if (i.customId === "iniciar") { cicloActivo = true; iniciarCicloTrivias(); await i.editReply("⚡ Ciclo iniciado."); }
+  else if (i.customId === "pausar") { cicloActivo = false; await i.editReply("⏸️ Ciclo pausado."); }
+  else if (i.customId === "saltar") { enviarJustificacion(); await i.editReply("⏭️ Saltando..."); }
 });
 
 client.login(process.env["DISCORD_TOKEN"]);
