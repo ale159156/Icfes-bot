@@ -33,9 +33,14 @@ async function obtenerContenidoYGenerarPregunta(intentos = 3) {
       const resCont = await drive.files.get({ fileId: arch.id!, alt: "media" }, { responseType: "text" });
       const texto = resCont.data.trim();
 
-      // 3. Generamos contenido
-      const prompt = `Extrae textualmente una pregunta ICFES de este texto: "${texto.substring(0, 3000)}". Devuelve SOLO JSON: {"pregunta": "...", "opciones": ["A) ...", "B) ...", "C) ...", "D) ..."], "correcta": 0, "justificacion": "..."}`;
+      // 3. Generamos contenido con IA
+      const prompt = `Analiza el siguiente texto y busca una pregunta de examen tipo ICFES. 
+      Si encuentras una pregunta con sus opciones (A, B, C, D), extráela. 
+      Si el texto no contiene preguntas, responde SOLO con: {"error": "no pregunta"}.
+      Texto: "${texto.substring(0, 3000)}"`;
+
       const response = await ai.models.generateContent({ model: "gemini-2.5-flash", contents: prompt });
+      // ...
 
       const responseText = response.text || "";
       const startIndex = responseText.indexOf('{');
