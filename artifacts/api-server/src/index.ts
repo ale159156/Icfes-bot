@@ -3,9 +3,13 @@ import { GoogleGenAI } from "@google/genai";
 import { google } from "googleapis";
 import http from "http";
 
-// 1. SERVIDOR WEB (Obligatorio para que Render mantenga el puerto abierto)
-const server = http.createServer((req, res) => res.end("Bot activo"));
-server.listen(process.env.PORT || 3000);
+// 1. SERVIDOR WEB ROBUSTO PARA RENDER
+// La IP '0.0.0.0' es obligatoria para que Render detecte los puertos
+const server = http.createServer((req, res) => res.end("Bot de estudio activo"));
+const PORT = process.env.PORT || 3000;
+server.listen(PORT, '0.0.0.0', () => {
+    console.log(`Servidor HTTP activo en puerto ${PORT}`);
+});
 
 const client = new Client({ intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent] });
 const ai = new GoogleGenAI({ apiKey: process.env["GEMINI_API_KEY"]! });
@@ -14,7 +18,7 @@ const drive = google.drive({ version: "v3", auth: process.env["DRIVE_API_KEY"] }
 let cicloActivo = false;
 let datosTriviaActual: any = null;
 
-// 2. FUNCIÓN PARA OBTENER CONTENIDO (Con filtro estricto anti-basura)
+// 2. FUNCIÓN DE OBTENCIÓN (Filtro contra archivos basura)
 async function obtenerContenidoValido(): Promise<{ texto: string; materia: string }> {
   try {
     const res = await drive.files.list({ q: `'${process.env["DRIVE_FOLDER_ID"]}' in parents and trashed = false`, fields: "files(id, name)" });
@@ -25,13 +29,12 @@ async function obtenerContenidoValido(): Promise<{ texto: string; materia: strin
     const resCont = await drive.files.get({ fileId: arch.id!, alt: "media" }, { responseType: "text" });
     const texto = resCont.data.trim();
 
-    // Filtro: Si detecta metadatos técnicos de escaneo, descarta el archivo
     if (texto.length < 500 || texto.toLowerCase().includes("camscanner")) return { texto: "", materia: "" };
     return { texto: texto.substring(0, 4000), materia: arch.name! };
   } catch { return { texto: "", materia: "" }; }
 }
 
-// 3. CICLO DE PREGUNTAS (Con manejo de errores para evitar que se detenga)
+// 3. CICLO DE PREGUNTAS
 async function iniciarCicloTrivias() {
   if (!cicloActivo) return;
 
@@ -51,9 +54,9 @@ async function iniciarCicloTrivias() {
       await canal.send(`@everyone ¡Nueva pregunta de simulacro! [${materia}]`);
       await canal.send({ embeds: [new EmbedBuilder().setTitle("📝 Simulacro ICFES").setDescription(`**${datosTriviaActual.pregunta}**\n\n${datosTriviaActual.opciones.join("\n")}`).setColor("#3B82F6")] });
       await canal.send({ poll: { question: { text: "Responde:" }, answers: [{ text: "A" }, { text: "B" }, { text: "C" }, { text: "D" }], duration: 1 } });
-      setTimeout(enviarJustificacion, 1800000); // 30 min para responder
+      setTimeout(enviarJustificacion, 1800000); // 30 min
     }
-  } catch (e) { setTimeout(iniciarCicloTrivias, 60000); } // Reintenta si hay error
+  } catch (e) { setTimeout(iniciarCicloTrivias, 60000); }
 }
 
 async function enviarJustificacion() {
@@ -68,7 +71,7 @@ async function enviarJustificacion() {
   if (cicloActivo) setTimeout(iniciarCicloTrivias, 120000); 
 }
 
-// 4. INICIALIZACIÓN Y LIMPIEZA DE BOTONES (Soluciona "Interaction failed")
+// 4. EVENTOS Y PANEL
 client.once("ready", async () => {
   const canal = await client.channels.fetch(process.env["CANAL_LOGS_ID"]!);
   if (canal?.isTextBased()) {
@@ -80,13 +83,13 @@ client.once("ready", async () => {
       new ButtonBuilder().setCustomId("pausar").setLabel("Pausar").setStyle(ButtonStyle.Secondary),
       new ButtonBuilder().setCustomId("saltar").setLabel("Saltar").setStyle(ButtonStyle.Danger)
     );
-    await canal.send({ embeds: [new EmbedBuilder().setTitle("⚡ Centro de Activación").setDescription("Controles remotos")], components: [row] });
+    await canal.send({ embeds: [new EmbedBuilder().setTitle("⚡ Centro de Activación").setDescription("Controles listos.")], components: [row] });
   }
 });
 
 client.on("interactionCreate", async (i) => {
   if (!i.isButton()) return;
-  await i.reply({ content: "Procesando...", flags: [MessageFlags.Ephemeral] }); // Usa flags en vez de ephemeral
+  await i.reply({ content: "Procesando...", flags: [MessageFlags.Ephemeral] });
   if (i.customId === "iniciar") { cicloActivo = true; iniciarCicloTrivias(); await i.editReply("⚡ Ciclo iniciado."); }
   else if (i.customId === "pausar") { cicloActivo = false; await i.editReply("⏸️ Ciclo pausado."); }
   else if (i.customId === "saltar") { enviarJustificacion(); await i.editReply("⏭️ Saltando..."); }
