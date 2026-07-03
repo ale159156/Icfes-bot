@@ -3,7 +3,7 @@ import { GoogleGenAI } from "@google/genai";
 import { google } from "googleapis";
 import http from "http";
 
-// 1. Servidor para mantener vivo el puerto en Render
+// 1. Servidor para mantener vivo el puerto (Evita "No open ports")
 const server = http.createServer((req, res) => res.end("Bot activo"));
 server.listen(process.env.PORT || 3000);
 
@@ -14,15 +14,7 @@ const drive = google.drive({ version: "v3", auth: process.env["DRIVE_API_KEY"] }
 let cicloActivo = false;
 let datosTriviaActual: any = null;
 
-// 2. PROMPT DE TUTOR ICFES (Estricto)
-const PROMPT_TUTOR = `Eres un tutor experto ICFES. Extrae UNA pregunta de opción múltiple basada en el material.
-REGLAS ESTRICTAS:
-1. Basado únicamente en el contenido académico del texto. NO menciones que es un archivo PDF o metadatos.
-2. Si el texto es técnico (ej. errores de lectura o "No hay archivos"), ignóralo.
-3. Genera el enunciado completo incluyendo su contexto.
-4. Devuelve SOLO JSON: {"pregunta": "...", "opciones": ["A) ...", "B) ...", "C) ...", "D) ..."], "correcta": 0, "justificacion": "...", "descartes": {"A": "...", "B": "...", "C": "...", "D": "..."}}`;
-
-// 3. Obtención de contenido con filtros de calidad
+// 2. Funciones declaradas globalmente (Evita ReferenceError)
 async function obtenerContenidoValido(): Promise<{ texto: string; materia: string }> {
   try {
     const res = await drive.files.list({ q: `'${process.env["DRIVE_FOLDER_ID"]}' in parents and trashed = false`, fields: "files(id, name)" });
@@ -33,28 +25,10 @@ async function obtenerContenidoValido(): Promise<{ texto: string; materia: strin
     const resCont = await drive.files.get({ fileId: arch.id!, alt: "media" }, { responseType: "text" });
     const texto = resCont.data.trim();
 
-    // Filtro estricto
+    // Filtro de calidad (ignora basura técnica)
     if (texto.length < 500 || texto.toLowerCase().includes("camscanner")) return { texto: "", materia: "" };
     return { texto: texto.substring(0, 4000), materia: arch.name! };
   } catch { return { texto: "", materia: "" }; }
-}
-
-// 4. Ciclo principal
-async function iniciarCicloTrivias() {
-  const { texto, materia } = await obtenerContenidoValido();
-  if (!texto) { setTimeout(iniciarCicloTrivias, 60000); return; }
-
-  const response = await ai.models.generateContent({ model: "gemini-2.0-flash", contents: `${PROMPT_TUTOR}\n\nTEXTO BASE:\n${texto}` });
-  try {
-    datosTriviaActual = JSON.parse(response.text.replace(/```json|```/g, "").trim());
-    const canal = await client.channels.fetch(process.env["CANAL_ID"]!);
-    if (canal?.isTextBased()) {
-      await canal.send(`@everyone ¡Nueva pregunta de simulacro! [${materia}]`);
-      await canal.send({ embeds: [new EmbedBuilder().setTitle("📝 Simulacro ICFES").setDescription(`**${datosTriviaActual.pregunta}**\n\n${datosTriviaActual.opciones.join("\n")}`).setColor("#3B82F6")] });
-      await canal.send({ poll: { question: { text: "Responde:" }, answers: [{ text: "A" }, { text: "B" }, { text: "C" }, { text: "D" }], duration: 1 } });
-      setTimeout(enviarJustificacion, 1800000); // 30 minutos
-    }
-  } catch { setTimeout(iniciarCicloTrivias, 60000); }
 }
 
 async function enviarJustificacion() {
@@ -69,7 +43,25 @@ async function enviarJustificacion() {
   if (cicloActivo) setTimeout(iniciarCicloTrivias, 120000); 
 }
 
-// 5. Panel Limpiador de Botones (se ejecuta al iniciar)
+async function iniciarCicloTrivias() {
+  const { texto, materia } = await obtenerContenidoValido();
+  if (!texto) { setTimeout(iniciarCicloTrivias, 60000); return; }
+
+  const response = await ai.models.generateContent({ model: "gemini-2.0-flash", contents: `Eres un tutor experto ICFES. Extrae UNA pregunta de opción múltiple del texto: ${texto}. Devuelve SOLO JSON: {"pregunta": "...", "opciones": ["A) ...", "B) ...", "C) ...", "D) ..."], "correcta": 0, "justificacion": "...", "descartes": {"A": "...", "B": "...", "C": "...", "D": "..."}}` });
+
+  try {
+    datosTriviaActual = JSON.parse(response.text.replace(/```json|```/g, "").trim());
+    const canal = await client.channels.fetch(process.env["CANAL_ID"]!);
+    if (canal?.isTextBased()) {
+      await canal.send(`@everyone ¡Nueva pregunta de simulacro! [${materia}]`);
+      await canal.send({ embeds: [new EmbedBuilder().setTitle("📝 Simulacro ICFES").setDescription(`**${datosTriviaActual.pregunta}**\n\n${datosTriviaActual.opciones.join("\n")}`).setColor("#3B82F6")] });
+      await canal.send({ poll: { question: { text: "Responde:" }, answers: [{ text: "A" }, { text: "B" }, { text: "C" }, { text: "D" }], duration: 1 } });
+      setTimeout(enviarJustificacion, 1800000); // 30 min
+    }
+  } catch { setTimeout(iniciarCicloTrivias, 60000); }
+}
+
+// 3. Inicio del cliente
 client.once("ready", async () => {
   const canal = await client.channels.fetch(process.env["CANAL_LOGS_ID"]!);
   if (canal?.isTextBased()) {
@@ -85,7 +77,7 @@ client.once("ready", async () => {
   }
 });
 
-// 6. Interacciones con flags modernos
+// 4. Interacción moderna
 client.on("interactionCreate", async (i) => {
   if (!i.isButton()) return;
   await i.reply({ content: "Procesando...", flags: [MessageFlags.Ephemeral] });
