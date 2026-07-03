@@ -83,8 +83,7 @@ client.on("interactionCreate", async (i) => {
   } catch (error) {
     logger.error({ error }, "Error al procesar botón");
     await i.editReply("❌ Hubo un error al procesar tu solicitud.");
-  }
-});
+  });
 
       await canal.send({ 
         embeds: [new EmbedBuilder().setTitle("⚡ Centro de Activación").setDescription("Bot listo. Presiona un botón para comenzar.")], 
