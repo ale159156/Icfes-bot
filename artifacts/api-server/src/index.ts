@@ -59,21 +59,32 @@ async function enviarJustificacion() {
   if (cicloActivo) setTimeout(iniciarCicloTrivias, 120000);
 }
 
-// --- 4. EVENTOS (VERIFICACIÓN) ---
-client.once("clientReady", async () => {
-  logger.info("Bot conectado. Intentando enviar panel de botones...");
-  try {
-    const canal = await client.channels.fetch(process.env["CANAL_LOGS_ID"]!);
-    if (!canal) {
-      logger.error("No se pudo encontrar el canal con ID: " + process.env["CANAL_LOGS_ID"]);
-      return;
-    }
+// --- 4. INTERACCIONES (Coloca este bloque en tu index.ts) ---
+client.on("interactionCreate", async (i) => {
+  // Solo procesamos botones
+  if (!i.isButton()) return;
 
-    if (canal.isTextBased()) {
-      const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
-        new ButtonBuilder().setCustomId("iniciar").setLabel("Iniciar").setStyle(ButtonStyle.Success),
-        new ButtonBuilder().setCustomId("pausar").setLabel("Pausar").setStyle(ButtonStyle.Secondary)
-      );
+  // 1. AVISAMOS A DISCORD QUE ESTAMOS TRABAJANDO (Evita el fallo de 3 segundos)
+  await i.deferReply({ flags: [MessageFlags.Ephemeral] });
+
+  try {
+    if (i.customId === "iniciar") {
+      cicloActivo = true;
+      // 2. Editamos la respuesta para confirmar al usuario
+      await i.editReply("⚡ Ciclo iniciado. Generando pregunta...");
+
+      // 3. Lanzamos la trivia
+      await iniciarCicloTrivias(); 
+    } 
+    else if (i.customId === "pausar") {
+      cicloActivo = false;
+      await i.editReply("⏸️ Ciclo pausado.");
+    }
+  } catch (error) {
+    logger.error({ error }, "Error al procesar botón");
+    await i.editReply("❌ Hubo un error al procesar tu solicitud.");
+  }
+});
 
       await canal.send({ 
         embeds: [new EmbedBuilder().setTitle("⚡ Centro de Activación").setDescription("Bot listo. Presiona un botón para comenzar.")], 
