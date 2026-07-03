@@ -58,6 +58,7 @@ async function iniciarCicloTrivias() {
 // --- 3. EVENTOS ---
 client.once("clientReady", async () => {
   logger.info("Bot conectado.");
+  logger.info("--- VERSIÓN DEL BOT: 2026-07-03 ---");
   const canal = await client.channels.fetch(process.env["CANAL_LOGS_ID"]!);
   if (canal?.isTextBased()) {
     const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
