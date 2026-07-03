@@ -11,6 +11,7 @@ const port = Number(rawPort);
 const DISCORD_TOKEN = process.env["DISCORD_TOKEN"];
 const GEMINI_API_KEY = process.env["GEMINI_API_KEY"];
 const CANAL_ENCUESTAS_ID = process.env["CANAL_ID"];
+const CANAL_LOGS_ID = process.env["CANAL_LOGS_ID"]; // Canal para notificaciones técnicas
 const DRIVE_API_KEY = process.env["DRIVE_API_KEY"];
 const DRIVE_FOLDER_ROOT_ID = process.env["DRIVE_FOLDER_ID"];
 
@@ -28,6 +29,15 @@ const drive = google.drive({ version: "v3", auth: DRIVE_API_KEY });
 let cicloActivo = false;
 let temporizadorCiclo: NodeJS.Timeout | null = null;
 let datosTriviaActual: any = null;
+
+// Función para enviar logs a un canal dedicado
+async function enviarLog(mensaje: string) {
+  try {
+    if (!CANAL_LOGS_ID) return;
+    const canal = await client.channels.fetch(CANAL_LOGS_ID);
+    if (canal && canal.isTextBased()) await canal.send(mensaje);
+  } catch (e) { console.error("Error enviando log:", e); }
+}
 
 async function obtenerContextoDesdeDrive(): Promise<{ textoContexto: string; materia: string }> {
   try {
@@ -52,43 +62,13 @@ async function obtenerContextoDesdeDrive(): Promise<{ textoContexto: string; mat
     if (archivos.length === 0) return { textoContexto: "", materia };
 
     const archivoElegido = archivos[Math.floor(Math.random() * archivos.length)];
-    
-    const resContenido = await drive.files.get({
-      fileId: archivoElegido.id,
-      alt: "media",
-    }, { responseType: "text" });
+    const resContenido = await drive.files.get({ fileId: archivoElegido.id, alt: "media" }, { responseType: "text" });
 
     const textoContexto = typeof resContenido.data === "string" ? resContenido.data.substring(0, 4000) : ""; 
     return { textoContexto, materia };
   } catch (error) {
-    console.error("❌ Error accediendo a Google Drive:", error);
+    enviarLog("❌ Error accediendo a Drive.");
     return { textoContexto: "", materia: "General" };
-  }
-}
-
-async function inicializarPanelActivacion() {
-  try {
-    const canal = await client.channels.fetch(CANAL_ENCUESTAS_ID || "");
-    if (!canal || !canal.isTextBased()) return;
-
-    const mensajes = await canal.messages.fetch({ limit: 50 });
-    const panelExiste = mensajes.some(m => m.embeds[0]?.title?.includes("⚡ Centro de Activación: Gonzo God"));
-    if (panelExiste) return;
-
-    const embedPanel = new EmbedBuilder()
-      .setTitle("⚡ Centro de Activación: Gonzo God")
-      .setDescription("Usa el botón de abajo para iniciar el ciclo continuo de simulacros basados en tu material de Google Drive. Cada pregunta durará 30 minutos.")
-      .setColor("#EAB308");
-
-    const botonActivar = new ButtonBuilder()
-      .setCustomId("activar_ciclo_bot")
-      .setLabel("🔌 Activar Ciclo de Estudio")
-      .setStyle(ButtonStyle.Success);
-
-    const fila = new ActionRowBuilder<ButtonBuilder>().addComponents(botonActivar);
-    await canal.send({ embeds: [embedPanel], components: [fila] });
-  } catch (error) {
-    console.error("❌ Error al crear el Panel:", error);
   }
 }
 
@@ -101,72 +81,28 @@ async function iniciarCicloTrivias() {
 
     const response = await ai.models.generateContent({
       model: "gemini-2.5-flash",
-      contents: `Eres un extractor experto de preguntas de examen. Tu única tarea es identificar una pregunta real de opción múltiple dentro del texto proporcionado y transcribirla.
-
-      [TEXTO DEL DOCUMENTO DE DRIVE]:
-      ${textoContexto || "No hay texto suficiente."}
-
-      Instrucciones:
-      1. Extrae una pregunta real que aparezca en el documento. No analices el formato del archivo.
-      2. Si no hay preguntas, usa el texto para crear una pregunta de práctica tipo Preicfes.
-      3. Devuelve un JSON con: pregunta, opciones (A, B, C, D), índice correcto (0-3), justificación y descartes para las opciones erróneas.
-
-      Devuelve solo el JSON:
-      {
-        "pregunta": "...", 
-        "opciones": ["A) ...", "B) ...", "C) ...", "D) ..."], 
-        "correcta": 0, 
-        "justificacion": "...",
-        "descartes": {"A": "...", "B": "...", "C": "...", "D": "..."}
-      }`,
+      contents: `Eres un extractor experto. Extrae una pregunta de opción múltiple del texto.
+      [TEXTO]: ${textoContexto || "Genera una pregunta estándar."}
+      Devuelve JSON: {"pregunta": "...", "opciones": ["A) ...", "B) ...", "C) ...", "D) ..."], "correcta": 0, "justificacion": "...", "descartes": {"A": "...", "B": "...", "C": "...", "D": "..."}}`,
     });
 
-    const textoLimpiado = response.text.replace(/```json|```/g, "").trim();
-    datosTriviaActual = JSON.parse(textoLimpiado);
-    const textoOpciones = datosTriviaActual.opciones.join("\n");
+    datosTriviaActual = JSON.parse(response.text.replace(/```json|```/g, "").trim());
+    
+    await canal.send({ embeds: [new EmbedBuilder().setTitle(`📝 Simulacro [${materia}]`).setDescription(`**${datosTriviaActual.pregunta}**\n\n${datosTriviaActual.opciones.join("\n")}`).setColor("#3B82F6")] });
+    await canal.send({ poll: { question: { text: "Responde:" }, answers: [{ text: "A" }, { text: "B" }, { text: "C" }, { text: "D" }], allowMultiselect: false, duration: 1 } });
 
-    const embedPregunta = new EmbedBuilder()
-      .setTitle(`📝 Simulacro Preicfes [Drive]: ${materia}`)
-      .setDescription(`**${datosTriviaActual.pregunta}**\n\n${textoOpciones}`)
-      .setColor("#3B82F6")
-      .setFooter({ text: "La justificación general se enviará automáticamente en 30 minutos." });
-
-    await canal.send({ embeds: [embedPregunta] });
-
-    await canal.send({
-      poll: {
-        question: { text: "Selecciona tu respuesta:" },
-        answers: [{ text: "A" }, { text: "B" }, { text: "C" }, { text: "D" }],
-        allowMultiselect: false,
-        duration: 1, 
-      }
-    });
+    enviarLog(`✅ Pregunta enviada en ${materia}. Justificación programada en 30 min.`);
 
     temporizadorCiclo = setTimeout(async () => {
-      try {
-        let textoDescartes = "";
-        for (const [letra, explicacion] of Object.entries(datosTriviaActual.descartes)) {
-          textoDescartes += `❌ **Opción ${letra}:** ${explicacion}\n`;
-        }
-
-        const embedSolucion = new EmbedBuilder()
-          .setTitle("✅ Justificación General del Ejercicio")
-          .setDescription(`La opción correcta era: **${datosTriviaActual.opciones[datosTriviaActual.correcta]}**\n\n🟢 **Justificación:**\n${datosTriviaActual.justificacion}\n\n🔍 **Análisis de los Descartes:**\n${textoDescartes}`)
-          .setColor("#10B981");
-
-        await canal.send({ embeds: [embedSolucion] });
-
-        if (cicloActivo) {
-          setTimeout(iniciarCicloTrivias, 5000); 
-        }
-      } catch (e) {
-        console.error("❌ Error enviando la justificación:", e);
-        if (cicloActivo) iniciarCicloTrivias();
-      }
+      let desc = "";
+      for (const [l, e] of Object.entries(datosTriviaActual.descartes)) desc += `❌ **${l}:** ${e}\n`;
+      await canal.send({ embeds: [new EmbedBuilder().setTitle("✅ Justificación General").setDescription(`Correcta: **${datosTriviaActual.opciones[datosTriviaActual.correcta]}**\n\n🟢 **Justificación:**\n${datosTriviaActual.justificacion}\n\n🔍 **Descartes:**\n${desc}`).setColor("#10B981")] });
+      
+      if (cicloActivo) setTimeout(iniciarCicloTrivias, 5000);
     }, 30 * 60 * 1000);
 
-  } catch (error: any) {
-    console.error("❌ Error en el ciclo:", error);
+  } catch (e) {
+    enviarLog("❌ Error en el ciclo: " + e);
     if (cicloActivo) temporizadorCiclo = setTimeout(iniciarCicloTrivias, 60000);
   }
 }
@@ -174,21 +110,15 @@ async function iniciarCicloTrivias() {
 client.on("interactionCreate", async (interaction) => {
   if (!interaction.isButton()) return;
   if (interaction.customId === "activar_ciclo_bot") {
-    if (cicloActivo) return await interaction.reply({ content: "ℹ️ El ciclo ya está corriendo.", ephemeral: true });
-    try {
-      cicloActivo = true;
-      await interaction.reply({ content: "⚡ ¡Conexión establecida con Drive! Iniciando simuladores automáticos...", ephemeral: true });
-      iniciarCicloTrivias();
-    } catch (error) {
-      console.error(error);
-      cicloActivo = false;
-    }
+    cicloActivo = true;
+    await interaction.reply({ content: "⚡ Ciclo iniciado.", ephemeral: true });
+    enviarLog("🔌 Ciclo de estudio activado por usuario.");
+    iniciarCicloTrivias();
   }
 });
 
-client.once("ready", () => {
-  logger.info(`¡Bot conectado exitosamente como ${client.user?.tag}!`);
-  inicializarPanelActivacion();
+client.once("ready", () => { 
+  enviarLog("🤖 Bot conectado y operativo."); 
 });
 
-if (DISCORD_TOKEN) { client.login(DISCORD_TOKEN); }
+if (DISCORD_TOKEN) client.login(DISCORD_TOKEN);
