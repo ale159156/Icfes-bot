@@ -1,6 +1,16 @@
 import { Client, GatewayIntentBits, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle } from "discord.js";
 import { GoogleGenAI } from "@google/genai";
 import { google } from "googleapis";
+import http from "http"; // 1. Importar módulo http
+
+// 2. Crear un servidor simple para que Render detecte el puerto
+const server = http.createServer((req, res) => {
+  res.writeHead(200, { "Content-Type": "text/plain" });
+  res.end("Bot de estudio activo y escuchando.");
+});
+
+const PORT = process.env.PORT || 3000;
+server.listen(PORT, () => console.log(`Servidor web escuchando en puerto ${PORT}`));
 
 const client = new Client({
   intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent],
@@ -11,7 +21,6 @@ const drive = google.drive({ version: "v3", auth: process.env["DRIVE_API_KEY"] }
 let cicloActivo = false;
 let datosTriviaActual: any = null;
 
-// Función para obtener contenido legible de Drive
 async function obtenerContenidoValido(): Promise<{ textoContexto: string; materia: string }> {
   try {
     const resCarpetas = await drive.files.list({
@@ -39,7 +48,6 @@ async function obtenerContenidoValido(): Promise<{ textoContexto: string; materi
   } catch (e) { return { textoContexto: "Error de lectura", materia: "" }; }
 }
 
-// Envío de justificación con el formato exacto de tu imagen
 async function enviarJustificacion() {
   if (!datosTriviaActual) return;
   const canal = await client.channels.fetch(process.env["CANAL_ID"]!);
@@ -58,14 +66,12 @@ async function enviarJustificacion() {
     });
   }
   datosTriviaActual = null;
-  // PAUSA DE SEGURIDAD de 2 minutos para no agotar cuota de API (Error 429)
   if (cicloActivo) setTimeout(iniciarCicloTrivias, 120000); 
 }
 
 async function iniciarCicloTrivias() {
   const { textoContexto, materia } = await obtenerContenidoValido();
 
-  // Validación de seguridad para carpetas vacías o errores
   if (!textoContexto || textoContexto.includes("No hay archivos") || textoContexto.includes("Error")) {
     setTimeout(iniciarCicloTrivias, 10000); 
     return;
@@ -83,7 +89,6 @@ async function iniciarCicloTrivias() {
     if (canal?.isTextBased()) {
       await canal.send({ embeds: [new EmbedBuilder().setTitle(`📝 Simulacro [${materia}]`).setDescription(`**${datosTriviaActual.pregunta}**\n\n${datosTriviaActual.opciones.join("\n")}`).setColor("#3B82F6")] });
       await canal.send({ poll: { question: { text: "Responde:" }, answers: [{ text: "A" }, { text: "B" }, { text: "C" }, { text: "D" }], allowMultiselect: false, duration: 1 } });
-      // Esperamos 30 minutos antes de revelar la respuesta
       setTimeout(enviarJustificacion, 1800000);
     }
   } catch (e) { setTimeout(iniciarCicloTrivias, 10000); }
