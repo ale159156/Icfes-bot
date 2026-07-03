@@ -11,7 +11,7 @@ const port = Number(rawPort);
 const DISCORD_TOKEN = process.env["DISCORD_TOKEN"];
 const GEMINI_API_KEY = process.env["GEMINI_API_KEY"];
 const CANAL_ENCUESTAS_ID = process.env["CANAL_ID"];
-const CANAL_LOGS_ID = process.env["CANAL_LOGS_ID"]; // Canal de configuración (#config-gonzo)
+const CANAL_LOGS_ID = process.env["CANAL_LOGS_ID"];
 const DRIVE_API_KEY = process.env["DRIVE_API_KEY"];
 const DRIVE_FOLDER_ROOT_ID = process.env["DRIVE_FOLDER_ID"];
 
@@ -68,11 +68,15 @@ async function inicializarPanelActivacion() {
     const canal = await client.channels.fetch(CANAL_LOGS_ID || "");
     if (!canal || !canal.isTextBased()) return;
     
+    // Limpieza: borra mensajes antiguos para evitar botones muertos
     const mensajes = await canal.messages.fetch({ limit: 20 });
-    if (mensajes.some(m => m.embeds[0]?.title?.includes("⚡ Centro de Activación"))) return;
+    const mensajesPanel = mensajes.filter(m => m.embeds[0]?.title?.includes("⚡ Centro de Activación"));
+    for (const msg of mensajesPanel.values()) {
+        await msg.delete().catch(() => {});
+    }
 
     const fila = new ActionRowBuilder<ButtonBuilder>().addComponents(
-      new ButtonBuilder().setCustomId("activar_ciclo_bot").setLabel("🔌 Iniciar Ciclo").setStyle(ButtonStyle.Success),
+      new ButtonBuilder().setCustomId("activar_ciclo_bot").setLabel("🔌 Iniciar").setStyle(ButtonStyle.Success),
       new ButtonBuilder().setCustomId("saltar_pregunta").setLabel("⏭️ Saltar y Nueva").setStyle(ButtonStyle.Danger)
     );
     
