@@ -34,11 +34,22 @@ async function obtenerContenidoYGenerarPregunta(intentos = 3) {
       const texto = resCont.data.trim();
 
       // 3. Generamos contenido con IA
-      const prompt = `Analiza el siguiente texto y busca una pregunta de examen tipo ICFES. 
-      Si encuentras una pregunta con sus opciones (A, B, C, D), extráela. 
-      Si el texto no contiene preguntas, responde SOLO con: {"error": "no pregunta"}.
-      Texto: "${texto.substring(0, 3000)}"`;
-
+      const prompt = `Actúa como Tutor Experto ICFES (Nivel 4). Analiza el texto: "${texto.substring(0, 3000)}".
+      extrae UNA pregunta de alta complejidad de los archivos dentro de la carpeta.
+      Formato JSON estricto:
+      {
+        "pregunta": "...",
+        "opciones": ["A) ...", "B) ...", "C) ...", "D) ..."],
+        "correcta": 0, // Índice de la correcta (0-3)
+        "justificacion": "Explicación breve de la respuesta correcta.",
+        "analisis_distractores": {
+          "A": "Por qué es incorrecta",
+          "B": "Por qué es incorrecta",
+          "C": "Por qué es incorrecta",
+          "D": "Por qué es incorrecta"
+        },
+        "pista_tutor": "..."
+      }`;
       const response = await ai.models.generateContent({ model: "gemini-2.5-flash", contents: prompt });
       // ...
 
@@ -63,45 +74,62 @@ async function obtenerContenidoYGenerarPregunta(intentos = 3) {
 
 async function enviarJustificacion() {
   if (!datosTriviaActual) return;
+
   const canal = await client.channels.fetch(process.env["CANAL_ID"]!);
   if (canal?.isTextBased()) {
-    let desc = Object.entries(datosTriviaActual.descartes).map(([k, v]) => `❌ **${k}:** ${v}`).join("\n");
-    await canal.send({ embeds: [new EmbedBuilder().setTitle("✅ Justificación").setDescription(`Correcta: **${datosTriviaActual.opciones[datosTriviaActual.correcta]}**\n\n🟢 **Justificación:**\n${datosTriviaActual.justificacion}\n\n🔍 **Descartes:**\n${desc}`).setColor("#10B981")] });
+    // Protección contra errores si el análisis no viene en el JSON
+    const distractores = datosTriviaActual.analisis_distractores || {};
+    const desc = Object.entries(distractores)
+      .map(([k, v]) => `❌ **Opción ${k}:** ${v}`)
+      .join("\n");
+
+    await canal.send({ 
+      embeds: [
+        new EmbedBuilder()
+          .setTitle("✅ Justificación y Análisis de Nivel 4")
+          .setDescription(
+            `**Respuesta Correcta:** ${datosTriviaActual.opciones[datosTriviaActual.correcta]}\n\n` +
+            `🟢 **Análisis Pedagógico:**\n${datosTriviaActual.justificacion}\n\n` +
+            `🔍 **¿Por qué los otros fallan?:**\n${desc}`
+          )
+          .setColor("#10B981")
+      ] 
+    });
   }
+
   datosTriviaActual = null;
-  if (cicloActivo) setTimeout(iniciarCicloTrivias, 120000);
+  // Si el ciclo sigue activo, esperamos 30 min (1,800,000 ms) para la siguiente pregunta
+  if (cicloActivo) setTimeout(iniciarCicloTrivias, 1800000); 
 }
 
 async function iniciarCicloTrivias() {
-  console.log("DEBUG: Iniciando ciclo de trivia..."); // <--- ESTO SALDRÁ EN RENDER
-
-  if (!cicloActivo) {
-    console.log("DEBUG: Ciclo detenido, cancelando...");
-    return;
-  }
+  if (!cicloActivo) return;
 
   const trivia = await obtenerContenidoYGenerarPregunta();
   if (!trivia) {
-    console.log("DEBUG: Error al generar trivia con IA.");
+    console.log("DEBUG: Error al generar trivia. Reintentando en 1 min.");
     setTimeout(iniciarCicloTrivias, 60000); 
     return;
   }
-
-  console.log("DEBUG: Trivia generada. Buscando canal ID:", process.env["CANAL_ID"]);
 
   datosTriviaActual = trivia;
   const canal = await client.channels.fetch(process.env["CANAL_ID"]!);
 
   if (canal?.isTextBased()) {
-    console.log("DEBUG: Canal encontrado, enviando mensaje...");
-    await canal.send({ embeds: [new EmbedBuilder().setTitle("📝 Simulacro ICFES").setDescription(`**${trivia.pregunta}**\n\n${trivia.opciones.join("\n")}`).setColor("#3B82F6")] });
-    await canal.send({ poll: { question: { text: "Responde:" }, answers: [{ text: "A" }, { text: "B" }, { text: "C" }, { text: "D" }], duration: 1 } });
+    await canal.send({ 
+      embeds: [
+        new EmbedBuilder()
+          .setTitle("📝 Simulacro ICFES - Nivel 4")
+          .setDescription(`**${trivia.pregunta}**\n\n${trivia.opciones.join("\n")}\n\n*💡 Pista del tutor: ${trivia.pista_tutor}*`)
+          .setColor("#3B82F6")
+      ] 
+    });
+
+    // Programamos la justificación para dentro de 30 minutos
     setTimeout(enviarJustificacion, 1800000);
-    console.log("DEBUG: Mensaje enviado con éxito.");
-  } else {
-    console.log("DEBUG: ERROR CRÍTICO: No se pudo enviar mensaje. ¿Tiene el bot permiso para escribir en ese canal?");
   }
 }
+
 
 // --- 3. EVENTOS ---
 client.once("clientReady", async () => {
@@ -113,7 +141,7 @@ client.once("clientReady", async () => {
       new ButtonBuilder().setCustomId("iniciar").setLabel("Iniciar").setStyle(ButtonStyle.Success),
       new ButtonBuilder().setCustomId("pausar").setLabel("Pausar").setStyle(ButtonStyle.Secondary)
     );
-    await canal.send({ embeds: [new EmbedBuilder().setTitle("⚡ Centro de Activación")], components: [row] });
+    await canal.send({ embeds: [new EmbedBuilder().setTitle("Activa cam de gonzo")], components: [row] });
   }
 });
 
@@ -128,7 +156,7 @@ client.on("interactionCreate", async (i) => {
   try {
     if (i.customId === "iniciar") {
       cicloActivo = true;
-      await i.editReply("⚡ Ciclo iniciado. Generando pregunta...");
+      await i.editReply("⚡ Generando pregunta...");
 
       // Ejecutamos la trivia sin bloquear el hilo principal
       iniciarCicloTrivias().catch(err => console.error(err));
