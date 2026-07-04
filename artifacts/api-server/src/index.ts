@@ -105,9 +105,12 @@ async function enviarJustificacion() {
 async function iniciarCicloTrivias() {
   if (!cicloActivo) return;
 
+  console.log("DEBUG: Iniciando ciclo...");
   const trivia = await obtenerContenidoYGenerarPregunta();
+
   if (!trivia) {
-    console.log("DEBUG: Error al generar trivia. Reintentando en 1 min.");
+    console.log("DEBUG: Error al generar trivia.");
+    // Reintentar en 1 minuto si falla
     setTimeout(iniciarCicloTrivias, 60000); 
     return;
   }
@@ -116,16 +119,17 @@ async function iniciarCicloTrivias() {
   const canal = await client.channels.fetch(process.env["CANAL_ID"]!);
 
   if (canal?.isTextBased()) {
+    // Enviamos solo el Embed, sin la encuesta por ahora para asegurar que salga la pregunta
     await canal.send({ 
       embeds: [
         new EmbedBuilder()
-          .setTitle("📝 Simulacro ICFES - Nivel 4")
-          .setDescription(`**${trivia.pregunta}**\n\n${trivia.opciones.join("\n")}\n\n*💡 Pista del tutor: ${trivia.pista_tutor}*`)
+          .setTitle("📝 Simulacro ICFES")
+          .setDescription(`**${trivia.pregunta}**\n\n${trivia.opciones.join("\n")}`)
           .setColor("#3B82F6")
       ] 
     });
 
-    // Programamos la justificación para dentro de 30 minutos
+    // Programamos la justificación 30 min después
     setTimeout(enviarJustificacion, 1800000);
   }
 }
