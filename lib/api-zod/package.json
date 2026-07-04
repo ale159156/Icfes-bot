@@ -7,8 +7,6 @@
     ".": "./src/index.ts"
   },
   "dependencies": {
-    "@tanstack/react-query": "catalog:",
-    "pg": "^8.22.0",
     "zod": "catalog:"
   }
 }

@@ -70,9 +70,5 @@
     "vaul": "^1.1.2",
     "vite": "catalog:",
     "zod": "catalog:"
-  },
-  "dependencies": {
-    "@tanstack/react-query": "catalog:",
-    "pg": "^8.22.0"
   }
 }

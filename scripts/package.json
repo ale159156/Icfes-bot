@@ -10,9 +10,5 @@
   "devDependencies": {
     "@types/node": "catalog:",
     "tsx": "catalog:"
-  },
-  "dependencies": {
-    "@tanstack/react-query": "catalog:",
-    "pg": "^8.22.0"
   }
 }
