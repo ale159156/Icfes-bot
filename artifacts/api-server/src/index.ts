@@ -10,176 +10,83 @@ const ai = new GoogleGenAI({ apiKey: process.env["GEMINI_API_KEY"]! });
 const drive = google.drive({ version: "v3", auth: process.env["DRIVE_API_KEY"] });
 
 let cicloActivo = false;
-let datosTriviaActual: any = null;
+let preguntasCache = []; // Caché inteligente
+let timeoutHandle = null;
 
-// --- 2. FUNCIONES LÓGICAS ---
-async function obtenerContenidoYGenerarPregunta(intentos = 3) {
-  for (let i = 0; i < intentos; i++) {
-    try {
-      const folderId = process.env["DRIVE_FOLDER_ID"];
-      if (!folderId) throw new Error("DRIVE_FOLDER_ID no configurado");
+// --- 2. LÓGICA DE EXTRACCIÓN (NO MODIFICA, SOLO EXTRAE) ---
+async function recargarCacheDePreguntas() {
+    const res = await drive.files.list({ q: `'${process.env["DRIVE_FOLDER_ID"]}' in parents and trashed = false`, fields: "files(id, name)" });
+    const archivos = (res.data.files || []).filter(f => f.name?.endsWith('.txt') || f.name?.endsWith('.pdf'));
+    const arch = archivos[Math.floor(Math.random() * archivos.length)];
+    const resCont = await drive.files.get({ fileId: arch.id!, alt: "media" }, { responseType: "text" });
 
-      // 1. Obtenemos la lista AQUÍ, dentro del try
-      const res = await drive.files.list({
-        q: `'${folderId}' in parents and trashed = false`,
-        fields: "files(id, name, mimeType)"
-      });
+    const prompt = `Extrae 5 preguntas de este texto tal cual. NO modifiques el enunciado ni las opciones.
+    Devuelve SOLO un JSON:
+    { "preguntas": [ { "pregunta": "...", "opciones": ["A) ...", "B) ...", "C) ...", "D) ..."], "correcta": 0, "justificacion": "...", "analisis_distractores": {"A": "...", "B": "...", "C": "...", "D": "..."} } ] }
+    Texto: "${resCont.data.substring(0, 4000)}"`;
 
-      const archivos = (res.data.files || []).filter(f => f.name?.endsWith('.txt') || f.name?.endsWith('.pdf'));
-      if (archivos.length === 0) throw new Error("No hay archivos en la carpeta");
-
-      // 2. Elegimos el archivo
-      const arch = archivos[Math.floor(Math.random() * archivos.length)];
-      const resCont = await drive.files.get({ fileId: arch.id!, alt: "media" }, { responseType: "text" });
-      const texto = resCont.data.trim();
-
-      // 3. Generamos contenido con IA
-      const prompt = `Actúa como Tutor Experto ICFES (Nivel 4). Analiza el texto: "${texto.substring(0, 3000)}".
-      extrae UNA pregunta de alta complejidad de los archivos dentro de la carpeta.
-      Formato JSON estricto:
-      {
-        "pregunta": "...",
-        "opciones": ["A) ...", "B) ...", "C) ...", "D) ..."],
-        "correcta": 0, // Índice de la correcta (0-3)
-        "justificacion": "Explicación breve de la respuesta correcta.",
-        "analisis_distractores": {
-          "A": "Por qué es incorrecta",
-          "B": "Por qué es incorrecta",
-          "C": "Por qué es incorrecta",
-          "D": "Por qué es incorrecta"
-        },
-        "pista_tutor": "..."
-      }`;
-      const response = await ai.models.generateContent({ model: "gemini-2.5-flash", contents: prompt });
-      // ...
-
-      const responseText = response.text || "";
-      const startIndex = responseText.indexOf('{');
-      const endIndex = responseText.lastIndexOf('}');
-      if (startIndex === -1 || endIndex === -1) throw new Error("Formato JSON inválido");
-
-      return JSON.parse(responseText.substring(startIndex, endIndex + 1));
-
-    } catch (e: any) {
-      console.warn(`Intento ${i + 1} fallido: ${e.message}`);
-      if (e.status === 503 || e.message?.includes("503")) {
-        await new Promise(resolve => setTimeout(resolve, 5000));
-      } else {
-        break; 
-      }
-    }
-  }
-  return null;
+    const response = await ai.models.generateContent({ model: "gemini-2.0-flash", contents: prompt });
+    const jsonString = response.text.match(/\{.*\}/s)[0];
+    preguntasCache = JSON.parse(jsonString).preguntas;
 }
 
-async function enviarJustificacion() {
-  if (!datosTriviaActual) return;
+// --- 3. FLUJO DE TRIVIA ---
+async function iniciarCiclo() {
+    if (!cicloActivo) return;
+    if (preguntasCache.length === 0) await recargarCacheDePreguntas();
+    
+    const trivia = preguntasCache.shift();
+    const canal = await client.channels.fetch(process.env["CANAL_ID"]!);
 
-  const canal = await client.channels.fetch(process.env["CANAL_ID"]!);
-  if (canal?.isTextBased()) {
-    // Protección contra errores si el análisis no viene en el JSON
-    const distractores = datosTriviaActual.analisis_distractores || {};
-    const desc = Object.entries(distractores)
-      .map(([k, v]) => `❌ **Opción ${k}:** ${v}`)
-      .join("\n");
+    const embed = new EmbedBuilder()
+        .setTitle("📝 Simulacro ICFES")
+        .setDescription(`${trivia.pregunta}\n\n${trivia.opciones.join("\n")}`)
+        .setColor("#3B82F6");
 
-    await canal.send({ 
-      embeds: [
-        new EmbedBuilder()
-          .setTitle("✅ Justificación y Análisis de Nivel 4")
-          .setDescription(
-            `**Respuesta Correcta:** ${datosTriviaActual.opciones[datosTriviaActual.correcta]}\n\n` +
-            `🟢 **Análisis Pedagógico:**\n${datosTriviaActual.justificacion}\n\n` +
-            `🔍 **¿Por qué los otros fallan?:**\n${desc}`
-          )
-          .setColor("#10B981")
-      ] 
-    });
-  }
-
-  datosTriviaActual = null;
-  // Si el ciclo sigue activo, esperamos 30 min (1,800,000 ms) para la siguiente pregunta
-  if (cicloActivo) setTimeout(iniciarCicloTrivias, 1800000); 
+    await canal.send({ embeds: [embed] });
+    timeoutHandle = setTimeout(() => enviarJustificacion(trivia), 1800000); // 30 min
 }
 
-async function iniciarCicloTrivias() {
-  if (!cicloActivo) return;
-
-  console.log("DEBUG: Iniciando ciclo...");
-  const trivia = await obtenerContenidoYGenerarPregunta();
-
-  if (!trivia) {
-    console.log("DEBUG: Error al generar trivia.");
-    // Reintentar en 1 minuto si falla
-    setTimeout(iniciarCicloTrivias, 60000); 
-    return;
-  }
-
-  datosTriviaActual = trivia;
-  const canal = await client.channels.fetch(process.env["CANAL_ID"]!);
-
-  if (canal?.isTextBased()) {
-    // Enviamos solo el Embed, sin la encuesta por ahora para asegurar que salga la pregunta
-    await canal.send({ 
-      embeds: [
-        new EmbedBuilder()
-          .setTitle("📝 Simulacro ICFES")
-          .setDescription(`**${trivia.pregunta}**\n\n${trivia.opciones.join("\n")}`)
-          .setColor("#3B82F6")
-      ] 
-    });
-
-    // Programamos la justificación 30 min después
-    setTimeout(enviarJustificacion, 1800000);
-  }
+async function enviarJustificacion(trivia) {
+    const canal = await client.channels.fetch(process.env["CANAL_ID"]!);
+    const desc = Object.entries(trivia.analisis_distractores).map(([k, v]) => `❌ **${k}:** ${v}`).join("\n");
+    
+    await canal.send({ embeds: [new EmbedBuilder().setTitle("✅ Justificación").setDescription(`Correcta: **${trivia.opciones[trivia.correcta]}**\n\n${trivia.justificacion}\n\n🔍 **Distractores:**\n${desc}`).setColor("#10B981")] });
+    if (cicloActivo) iniciarCiclo();
 }
 
-
-// --- 3. EVENTOS ---
+// --- 4. INTERACCIONES Y PANEL ---
 client.once("clientReady", async () => {
-  logger.info("Bot conectado.");
-  logger.info("--- VERSIÓN DEL BOT: 2026-07-03 ---");
-  const canal = await client.channels.fetch(process.env["CANAL_LOGS_ID"]!);
-  if (canal?.isTextBased()) {
-    const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
-      new ButtonBuilder().setCustomId("iniciar").setLabel("Iniciar").setStyle(ButtonStyle.Success),
-      new ButtonBuilder().setCustomId("pausar").setLabel("Pausar").setStyle(ButtonStyle.Secondary)
+    logger.info("Bot conectado.");
+    const canal = await client.channels.fetch(process.env["CANAL_LOGS_ID"]!);
+    // Borrar mensajes previos si deseas un panel único (opcional: limpiar canal)
+    const row = new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId("iniciar").setLabel("Iniciar").setStyle(ButtonStyle.Success),
+        new ButtonBuilder().setCustomId("pausar").setLabel("Pausar").setStyle(ButtonStyle.Secondary),
+        new ButtonBuilder().setCustomId("saltar").setLabel("Saltar").setStyle(ButtonStyle.Primary)
     );
-    await canal.send({ embeds: [new EmbedBuilder().setTitle("Activa cam de gonzo")], components: [row] });
-  }
+    await canal.send({ content: "### 🎮 Panel de Control ICFES", components: [row] });
 });
 
 client.on("interactionCreate", async (i) => {
-  if (!i.isButton()) return;
+    if (!i.isButton()) return;
+    await i.deferReply({ flags: [MessageFlags.Ephemeral] });
 
-  // Verificamos si ya fue diferida para evitar el error 10062
-  if (!i.deferred && !i.replied) {
-      await i.deferReply({ flags: [MessageFlags.Ephemeral] });
-  }
-
-  try {
     if (i.customId === "iniciar") {
-      cicloActivo = true;
-      await i.editReply("⚡ Generando pregunta...");
-
-      // Ejecutamos la trivia sin bloquear el hilo principal
-      iniciarCicloTrivias().catch(err => console.error(err));
-
+        cicloActivo = true;
+        iniciarCiclo();
+        await i.editReply("⚡ Ciclo iniciado.");
     } else if (i.customId === "pausar") {
-      cicloActivo = false;
-      await i.editReply("⏸️ Ciclo pausado.");
+        cicloActivo = false;
+        clearTimeout(timeoutHandle);
+        await i.editReply("⏸️ Pausado.");
+    } else if (i.customId === "saltar") {
+        clearTimeout(timeoutHandle);
+        iniciarCiclo();
+        await i.editReply("⏭️ Saltando...");
     }
-  } catch (e) { 
-    console.error("Error en interacción:", e);
-    // Solo intentamos editar si aún no hemos respondido
-    if (!i.replied) {
-        await i.editReply("❌ Error al procesar.");
-    }
-  }
+    setTimeout(() => i.deleteReply().catch(() => {}), 3000);
 });
 
 client.login(process.env["DISCORD_TOKEN"]);
-
-// --- 4. EXPRESS ---
-const port = Number(process.env["PORT"] || 10000);
-app.listen(port, () => logger.info({ port }, "Servidor y Bot activos"));
+app.listen(Number(process.env["PORT"] || 10000), () => logger.info("Servidor activo"));
