@@ -1,5 +1,5 @@
-import app from "./app.js";
-import { logger } from "./lib/logger.js";
+import app from "./app.ts";
+import { logger } from "./lib/logger.ts";
 import { Client, GatewayIntentBits, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, MessageFlags } from "discord.js";
 import { GoogleGenAI } from "@google/genai";
 import { google } from "googleapis";
